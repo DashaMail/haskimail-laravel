@@ -379,6 +379,41 @@ final class HaskimailClientTest extends TestCase
         $this->client()->sendWithTemplate(self::MESSAGE);
     }
 
+    public function test_template_id_must_be_an_integer(): void
+    {
+        Http::fake();
+
+        $this->expectException(InvalidMessageException::class);
+        $this->expectExceptionMessage('"TemplateId" must be an integer');
+
+        $this->client()->sendWithTemplate(['TemplateId' => '4521', 'From' => 'a@example.com', 'To' => 'b@example.com']);
+    }
+
+    public function test_an_overlong_from_is_rejected_after_encoding(): void
+    {
+        Http::fake();
+
+        // 80 Cyrillic letters in the display name: each encodes to ~2.67 chars, so the
+        // rendered header exceeds the documented 255-character limit.
+        $this->expectException(InvalidMessageException::class);
+        $this->expectExceptionMessage('field "From" is longer than 255 characters');
+
+        $this->client()->send([
+            'From' => str_repeat('И', 80).' <shop@example.com>',
+            'To' => 'b@example.com',
+            'TextBody' => 'Hi',
+        ]);
+    }
+
+    public function test_a_short_from_is_accepted(): void
+    {
+        Http::fake(['*' => Http::response(self::okResponse())]);
+
+        $this->client()->send(['From' => 'Магазин <shop@example.com>', 'To' => 'b@example.com', 'TextBody' => 'Hi']);
+
+        Http::assertSentCount(1);
+    }
+
     /**
      * @return iterable<string, array{array<array-key, mixed>}>
      */

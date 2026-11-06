@@ -22,6 +22,15 @@ use Symfony\Component\HttpFoundation\Response;
  */
 final class VerifyWebhookRequest
 {
+    /** Signatures all valid. */
+    private const VALID = 'valid';
+
+    /** Bad signature or malformed body: refuse permanently (403). */
+    private const INVALID = 'invalid';
+
+    /** Valid signature but unrecognized payload shape: refuse retryably (503). */
+    private const UNSUPPORTED = 'unsupported';
+
     public function __construct(
         private readonly Config $config,
         private readonly LoggerInterface $logger,
@@ -47,10 +56,22 @@ final class VerifyWebhookRequest
             return new Response('', Response::HTTP_UNAUTHORIZED, ['WWW-Authenticate' => 'Basic realm="Haskimail webhooks"']);
         }
 
-        if ($signingKey !== '' && ! $this->hasValidSignatures($request, $signingKey)) {
-            $this->logger->warning('Haskimail webhook refused: invalid signature.', ['ip' => $request->ip()]);
+        if ($signingKey !== '') {
+            $signature = $this->checkSignatures($request, $signingKey);
 
-            return new Response('', Response::HTTP_FORBIDDEN);
+            if ($signature === self::INVALID) {
+                $this->logger->warning('Haskimail webhook refused: invalid signature.', ['ip' => $request->ip()]);
+
+                return new Response('', Response::HTTP_FORBIDDEN);
+            }
+
+            if ($signature === self::UNSUPPORTED) {
+                // Haskimail never retries 4xx, and a 403 here would lose real events forever
+                // (e.g. a new message_id format). Ask it to redeliver until the SDK catches up.
+                $this->logger->warning('Haskimail webhook refused: unrecognized event shape, asking Haskimail to redeliver.', ['ip' => $request->ip()]);
+
+                return new Response('', Response::HTTP_SERVICE_UNAVAILABLE);
+            }
         }
 
         return $next($request);
@@ -59,28 +80,40 @@ final class VerifyWebhookRequest
     /**
      * Every event must carry a valid signature; malformed bodies are refused here
      * too, so unauthenticated callers cannot probe the controller.
+     *
+     * @return self::* one of {@see self::VALID}, {@see self::INVALID}, {@see self::UNSUPPORTED}
      */
-    private function hasValidSignatures(Request $request, string $signingKey): bool
+    private function checkSignatures(Request $request, string $signingKey): string
     {
         $payload = json_decode($request->getContent(), true, 64);
 
         if (! is_array($payload) || $payload === []) {
-            return false;
+            return self::INVALID;
         }
 
         $events = array_is_list($payload) ? $payload : [$payload];
 
         if (count($events) > WebhookController::MAX_EVENTS) {
-            return false;
+            return self::INVALID;
         }
 
         foreach ($events as $event) {
-            if (! is_array($event) || ! WebhookSignature::isValid($event, $signingKey)) {
-                return false;
+            if (! is_array($event)) {
+                return self::INVALID;
+            }
+
+            $result = WebhookSignature::verify($event, $signingKey);
+
+            if ($result === WebhookSignature::INVALID_SIGNATURE) {
+                return self::INVALID;
+            }
+
+            if ($result === WebhookSignature::UNSUPPORTED_FORMAT) {
+                return self::UNSUPPORTED;
             }
         }
 
-        return true;
+        return self::VALID;
     }
 
     private static function hasValidCredentials(Request $request, string $username, string $password): bool

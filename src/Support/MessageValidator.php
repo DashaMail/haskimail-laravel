@@ -24,9 +24,13 @@ final class MessageValidator
 
     /**
      * Documented maximum lengths, counted in UTF-16 code units. "From" (255) is not
-     * checked: the live API accepts longer values, which RFC 2047-encoded names need.
+     * checked here because the API limit applies to the final rendered value, after
+     * display names have been RFC 2047-encoded by the transport; see validateFrom().
      */
     private const MAX_LENGTH = ['Subject' => 2000, 'Tag' => 1000];
+
+    /** Maximum length of the rendered "From" header value, per the documentation. */
+    private const FROM_MAX_LENGTH = 255;
 
     /** Control characters except TAB, plus Unicode line and paragraph separators. */
     private const LINE_BREAKING = '/[\x00-\x08\x0A-\x1F\x7F\x{0085}\x{2028}\x{2029}]/u';
@@ -60,6 +64,9 @@ final class MessageValidator
 
             self::singleLine($context.' field "'.$field.'"', (string) $message[$field]);
         }
+
+        self::validateTemplateId($message['TemplateId'] ?? null, $context);
+        self::validateFrom($message['From'] ?? null, $context);
 
         foreach (self::MAX_LENGTH as $field => $max) {
             if (is_string($message[$field] ?? null) && self::utf16Length($message[$field]) > $max) {
@@ -98,6 +105,66 @@ final class MessageValidator
         }
 
         return $name;
+    }
+
+    /**
+     * The API stores TemplateId as a number; a numeric string would not match any
+     * template and would be rejected late (or, worse, silently treated as an alias).
+     */
+    private static function validateTemplateId(mixed $templateId, string $context): void
+    {
+        if ($templateId === null) {
+            return;
+        }
+
+        if (! is_int($templateId)) {
+            throw new InvalidMessageException($context.' field "TemplateId" must be an integer.');
+        }
+
+        if ($templateId <= 0) {
+            throw new InvalidMessageException($context.' field "TemplateId" must be a positive integer.');
+        }
+    }
+
+    /**
+     * The documented 255-character limit applies to the rendered "From" header, i.e.
+     * after display names are RFC 2047-encoded. The raw value may be shorter than the
+     * encoded one (and vice versa), so estimate the worst case before sending.
+     */
+    private static function validateFrom(mixed $from, string $context): void
+    {
+        if (! is_string($from)) {
+            return;
+        }
+
+        // A non-ASCII display name doubles to a base64 encoded-word; count conservatively.
+        $rendered = self::encodedLength($from);
+
+        if ($rendered > self::FROM_MAX_LENGTH) {
+            throw new InvalidMessageException(sprintf(
+                '%s field "From" is longer than %d characters after RFC 2047 encoding (%d).',
+                $context,
+                self::FROM_MAX_LENGTH,
+                $rendered,
+            ));
+        }
+    }
+
+    /**
+     * Upper bound of the length of "Name <addr>" after the name is RFC 2047-encoded.
+     *
+     * An encoded-word is "=?UTF-8?B?" + base64(4/3×bytes) + "?="; non-ASCII bytes
+     * are the worst case. ASCII stays one character.
+     */
+    private static function encodedLength(string $value): int
+    {
+        $length = 0;
+
+        foreach (preg_split('//u', $value, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $char) {
+            $length += strlen($char) === 1 ? 1 : (int) ceil(strlen($char) * 4 / 3);
+        }
+
+        return $length;
     }
 
     private static function validateHeaders(mixed $headers, string $context): void

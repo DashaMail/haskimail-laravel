@@ -150,6 +150,22 @@ final class WebhookEventTest extends TestCase
         self::assertFalse(WebhookSignature::isValid(['secret' => ['x']] + $payload, 'key'));
     }
 
+    public function test_valid_but_unrecognized_shape_is_distinguished_from_a_forgery(): void
+    {
+        $recipient = 'ivan@example.com';
+        $messageId = 'a-new-format-not-a-uuid';
+        $key = 'key';
+        $payload = ['recipient' => $recipient, 'message_id' => $messageId, 'secret' => md5($recipient.$messageId.$key)];
+
+        // Signature is valid but the message_id shape is not recognized yet.
+        self::assertSame(WebhookSignature::UNSUPPORTED_FORMAT, WebhookSignature::verify($payload, $key));
+        self::assertFalse(WebhookSignature::isValid($payload, $key));
+
+        // A wrong key is a plain forgery, whatever the message_id shape.
+        $payload['secret'] = md5($recipient.$messageId.'wrong');
+        self::assertSame(WebhookSignature::INVALID_SIGNATURE, WebhookSignature::verify($payload, $key));
+    }
+
     public function test_signature_for_events_without_message(): void
     {
         $payload = ['recipient' => 'a@example.com', 'message_id' => '', 'secret' => md5('a@example.com'.'k')];

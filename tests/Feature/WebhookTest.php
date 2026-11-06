@@ -209,6 +209,25 @@ final class WebhookTest extends TestCase
         Event::assertDispatched(SpamComplaintReceived::class, 1);
     }
 
+    public function test_a_new_message_id_format_is_redelivered_instead_of_lost(): void
+    {
+        // A valid signature but a message_id the SDK does not recognize yet must not be
+        // answered 403 (Haskimail never retries 4xx and the event would be lost forever).
+        Event::fake(self::EVENTS);
+        $recipient = 'ivan@example.com';
+        $messageId = 'a-new-format-that-is-not-a-uuid-or-32-hex';
+        $payload = array_merge(WebhookEventTest::bounce(), [
+            'recipient' => $recipient,
+            'email' => $recipient,
+            'message_id' => $messageId,
+            'secret' => WebhookSignature::compute($recipient, $messageId, self::KEY),
+        ]);
+
+        $this->postJson('/haskimail/webhook', $payload)->assertServiceUnavailable();
+
+        Event::assertNothingDispatched();
+    }
+
     public function test_oversized_event_lists_are_refused(): void
     {
         Event::fake(self::EVENTS);
