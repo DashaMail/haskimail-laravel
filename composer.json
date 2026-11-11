@@ -13,6 +13,10 @@
         "webhooks"
     ],
     "homepage": "https://haskimail.ru/developer",
+    "support": {
+        "issues": "https://github.com/DashaMail/haskimail-laravel/issues",
+        "source": "https://github.com/DashaMail/haskimail-laravel"
+    },
     "require": {
         "php": "^8.2",
         "ext-json": "*",
